@@ -272,3 +272,8 @@ Ran the full test suite after the fix:
 ```
 pytest tests/ -v   →   13 passed
 ```
+
+
+## Commit History
+
+![Commit history](commit_history.png)
