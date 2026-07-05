@@ -1,5 +1,10 @@
 # Mixtape — Project 5 Submission
 
+## AI Usage
+
+I used AI tools mainly as a fast way to orient myself in the codebase and to check my understanding of the bug reports before changing anything. I asked them to explain the app architecture, summarize how the routes, services, and models fit together, and trace specific flows such as “a user rates a song” and “a playlist is retrieved from the API.” They were especially helpful for explaining the separation between the thin route layer and the business logic in the services layer, which made it easier to narrow down where each bug likely lived.
+
+
 ## Codebase Map
 
 ### Main Files
