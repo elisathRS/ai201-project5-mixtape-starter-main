@@ -177,17 +177,50 @@ Ran the full suite afterward to confirm no regressions in search or playlist tes
 ### Issue 3 — Same song appears twice in search
 
 **How I reproduced it:**
-Ran the test that searches for a song that has three tags assigned to it:
+
+Ran the test that searches for a song that has three tags ("rap", "hip-hop", "boom bap"):
 
 ```
 pytest tests/test_search.py::test_search_no_duplicates_multi_tag_song -v
 ```
 
-**Note:** This test currently passes. The reason is that SQLAlchemy's identity map collapses duplicate rows into a single Python object when querying a full model — so the ORM hides the problem. The duplicate rows exist in the SQL output but are deduplicated before `.all()` returns them. The underlying query is still incorrect: inspecting the SQL shows one row per (song, tag) pair, meaning a song with 3 tags produces 3 rows. The fix (removing the unnecessary join) is still correct and makes the query unambiguously safe.
+This test passed — which itself was a clue. SQLAlchemy's identity map collapses multiple SQL rows that share the same primary key into a single Python object, so `.all()` returns unique `Song` instances even when the underlying SQL produces one row per (song, tag) pair. The bug is real at the SQL level but hidden at the ORM level. To confirm, also ran:
 
-**Required data condition:** The bug manifests only for songs that have 2 or more tags. A song with 0 or 1 tags is not affected because there are no duplicate join rows to collapse.
+```
+pytest tests/test_search.py -v   →   5 passed
+```
 
-**Root cause:** [search_service.py:27](services/search_service.py#L27) — the `outerjoin(song_tags, ...)` is not needed. Tags are already eagerly loaded via the `song.tags` relationship defined on the `Song` model and used inside `to_dict()`. The join multiplies rows without adding any information that isn't already available.
+All search tests passed before the fix, and all still pass after. The bug is confirmed through code inspection rather than a test failure.
+
+**Required data condition:** A song with 2 or more tags. A song with 0 or 1 tags produces no duplicate rows from the join, so it is unaffected.
+
+**How I found the root cause:**
+
+Started at the `GET /songs/search` route in [routes/songs.py](routes/songs.py), which calls `search_songs()` in [services/search_service.py](services/search_service.py). Read the query in `search_songs()` and immediately saw the `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` call. Then checked [models.py:90](models.py#L90) to see how tags are defined on `Song`:
+
+```python
+tags = db.relationship("Tag", secondary=song_tags, lazy="subquery")
+```
+
+`lazy="subquery"` means SQLAlchemy loads all tags for every song in the result set automatically using a separate subquery — the join in `search_songs()` is therefore completely redundant. It adds no data that isn't already available, and it multiplies rows as a side effect.
+
+**The root cause:**
+
+`search_songs()` in [search_service.py:27](services/search_service.py#L27) joined the `song_tags` association table with `.outerjoin(song_tags, Song.id == song_tags.c.song_id)`. An outer join on a many-to-many association table produces one SQL row per matching (song, tag) pair. A song with 3 tags produces 3 rows. Although SQLAlchemy's identity map prevented duplicate Python objects from appearing in the returned list, the join was structurally wrong: the `Song` model already declares `tags = db.relationship("Tag", secondary=song_tags, lazy="subquery")`, which causes SQLAlchemy to load tags automatically via a subquery whenever songs are queried. The join in the query body was duplicating work that the ORM relationship already handles, and doing so in a way that corrupts row counts.
+
+**Fix and side-effect check:**
+
+Removed the `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` line. Because `Tag` and `song_tags` were only imported for that join, also removed them from the import on line 8 (`from models import Song, Tag, song_tags` → `from models import Song`).
+
+No other file uses `search_service.py`'s imports, and `get_song()` in the same file only uses `Song` — unaffected.
+
+Ran the full test suite after the fix:
+
+```
+pytest tests/ -v   →   11 passed, 2 failed (playlist bug, still unfixed)
+```
+
+All 5 search tests pass. Tags are still included correctly in every search result because the `song.tags` relationship loads them regardless of whether the join is present.
 
 ---
 
