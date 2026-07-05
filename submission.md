@@ -2,9 +2,19 @@
 
 ## AI Usage
 
-I used AI tools during investigation as a support tool for understanding code I had already narrowed down, not as a substitute for reading the implementation myself. After I identified a suspicious function, I asked the AI to explain edge cases, compare similar code paths, or clarify Python behavior relevant to the bug. For example, I asked it to reason about the streak logic in [services/streak_service.py](services/streak_service.py) by asking what edge cases could make the function return the wrong value, and I asked it to explain the difference between Python’s `weekday()` and `isoweekday()` while I was checking the date comparison. I also used it to compare the structure of the playlist and search service logic so I could understand which code path was responsible for each behavior.
+I used AI tools during investigation as a support tool for understanding code I had already narrowed down, not as a substitute for reading the implementation myself.
 
-This worked best when I had already found the suspicious code and wanted help interpreting it. The AI was useful for explaining what the code was doing and suggesting possible failure modes, but it was not reliable enough to diagnose the bug on its own without full context. In the streak case, the AI helped me frame the problem around the date comparison, but I still verified the diagnosis by reading the implementation directly and running the relevant tests myself. In the search case, the AI gave a plausible high-level explanation, but I had to inspect the query in [services/search_service.py](services/search_service.py) directly to confirm the actual cause before changing anything. That workflow—find the suspicious code, use AI to help interpret it, then verify the diagnosis myself—was the approach I used throughout the project.
+**Specific use 1 — explaining the streak date logic**
+
+For Issue 1, after reading `update_listening_streak()` in [services/streak_service.py](services/streak_service.py) and seeing the `today.weekday() != 6` guard, I asked the AI to explain what `date.weekday()` returns for each day of the week and why a `!= 6` check on Sunday would affect the branch logic. It explained that `weekday()` returns 6 for Sunday specifically (Monday = 0 through Sunday = 6), which confirmed that the guard would make the entire `elif` False on Sundays, causing the streak to fall through to the `else` reset branch instead of incrementing. That explanation made the fix unambiguous.
+
+**Specific use 2 — explaining the `outerjoin` behavior in `search_songs()`**
+
+For Issue 3, after reading the query in [services/search_service.py](services/search_service.py) and seeing `.outerjoin(song_tags, Song.id == song_tags.c.song_id)`, I asked the AI whether that join was necessary given that `Song` already had a `tags` relationship. It explained that an outer join on a many-to-many association table produces one SQL row per (song, tag) pair, and pointed me to check how `tags` was declared in [models.py](models.py). I read that line myself — `lazy="subquery"` — which confirmed the join was redundant and safe to remove.
+
+**Where the AI was incomplete and I had to course-correct**
+
+For Issue 3, the AI told me to run `pytest tests/test_search.py::test_search_no_duplicates_multi_tag_song` to reproduce the bug, and predicted the test would fail. The test passed. The AI’s prediction was wrong. When I reported this, it explained that SQLAlchemy’s identity map collapses rows with the same primary key into a single Python object before `.all()` returns, so the duplicate rows exist in SQL but are hidden at the ORM level — something it should have explained upfront. I had to verify this by re-reading the query and the `Song` model definition myself before I trusted the explanation and proceeded with the fix.
 
 ## Codebase Map
 
