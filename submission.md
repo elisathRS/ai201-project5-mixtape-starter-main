@@ -227,18 +227,42 @@ All 5 search tests pass. Tags are still included correctly in every search resul
 ### Issue 5 — Last song in a playlist never shows up
 
 **How I reproduced it:**
+
 Ran the playlist tests against a playlist seeded with 5 songs (Track 1 through Track 5):
 
 ```
 pytest tests/test_playlists.py -v
 ```
 
-**Required data condition:** Any playlist with at least 2 songs. The last song (highest position value) is always the one dropped, regardless of how many songs are in the playlist.
-
-**Observed failures:**
+Observed two failures:
 ```
 test_playlist_returns_all_songs     FAILED — assert 4 == 5
 test_playlist_returns_songs_in_order FAILED — list ends at 'Track 4', missing 'Track 5'
 ```
 
-**Root cause:** [playlist_service.py:66](services/playlist_service.py#L66) — `songs[:-1]` is Python slice notation meaning "everything except the last element." The query fetches all songs correctly; the slice then removes the final one before returning. Changing `songs[:-1]` to `songs` fixes it.
+Required data condition: any playlist with at least 1 song. An empty playlist is unaffected (slicing an empty list returns an empty list either way). A single-song playlist silently returns an empty list instead of the one song. A 5-song playlist returns 4. The pattern is always: exactly one song missing, always the last one.
+
+**How I found the root cause:**
+
+Started at `GET /playlists/<id>/songs` in [routes/playlists.py](routes/playlists.py), which calls `get_playlist_songs()` in [services/playlist_service.py](services/playlist_service.py). Read the function top to bottom. The SQL query on lines 58–64 is correct — it joins `playlist_entries`, filters by `playlist_id`, and orders by `position` ascending. The problem is on the return line: `songs[:-1]`.
+
+**The root cause:**
+
+`get_playlist_songs()` in [playlist_service.py:66](services/playlist_service.py#L66) returned `songs[:-1]` instead of `songs`. In Python, `[:-1]` is slice notation meaning "every element except the last one." The SQL query correctly fetched all songs in position order — the slice then silently discarded the final song before the list was returned. Because the drop always targets the last element regardless of playlist length, no playlist could ever return its final track.
+
+**Fix and side-effect check:**
+
+Changed `songs[:-1]` to `songs` on line 66 — one character removed. No other change was needed; the query itself was correct.
+
+Boundary cases checked:
+- Empty playlist → `songs` is `[]`, slicing `[]` or iterating `[]` both return `[]` — behaviour unchanged ✓
+- 1-song playlist → previously returned `[]` (the only song was dropped); now correctly returns the one song ✓
+- 5-song playlist → previously returned 4 songs; now returns all 5 in position order ✓
+
+Also checked `get_playlist()` and `get_user_playlists()` in the same file — neither touches the `songs` list, so both are unaffected.
+
+Ran the full test suite after the fix:
+
+```
+pytest tests/ -v   →   13 passed
+```
